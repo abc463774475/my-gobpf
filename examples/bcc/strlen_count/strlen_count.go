@@ -27,19 +27,22 @@ import "C"
 
 const source string = `
 #include <uapi/linux/ptrace.h>
-typedef char strlenkey_t[80];
-BPF_HASH(counts, strlenkey_t);
 
-int count(struct pt_regs *ctx) {
+struct key_t {
+	char c[80];
+};
+
+BPF_HASH(counts, struct key_t);
+BPF_PERF_ARRAY(clk, MAX_CPUS);
+
+int count(struct pt_regs *ctx, int i, long j,int *k) {
+	bpf_trace_printk("111111  i %d j %ld  k %d\n",i,j,*k);
 	if (!PT_REGS_PARM1(ctx))
 		return 0;
-
-	strlenkey_t key;
-	u64 zero = 0, *val;
-
-	bpf_probe_read(&key, sizeof(key), (void *)PT_REGS_PARM1(ctx));
-	val = counts.lookup_or_init(&key, &zero);
-	(*val)++;
+	char sz1[64];
+	int ret = 0;
+	ret = bpf_probe_read(&sz1,sizeof(sz1),(void*)PT_REGS_PARM2(ctx));
+	bpf_trace_printk ("sz %ld  %s  max \n", PT_REGS_PARM2(ctx),sz1);
 	return 0;
 }
 `
@@ -49,7 +52,7 @@ var ansiEscape = regexp.MustCompile(`[[:cntrl:]]`)
 func main() {
 	pid := flag.Int("pid", -1, "attach to pid, default is all processes")
 	flag.Parse()
-	m := bpf.NewModule(source, []string{})
+	m := bpf.NewModule(source, []string{"-DMAX_CPUS=10"})
 	defer m.Close()
 
 	strlenUprobe, err := m.LoadUprobe("count")
@@ -58,7 +61,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	err = m.AttachUprobe("c", "strlen", strlenUprobe, *pid)
+	err = m.AttachUprobe("/home/hxd/work/c++/test/a.out", "f111", strlenUprobe, *pid)
+	// m.AttachUretprobe()
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to attach uprobe to strlen: %s\n", err)
 		os.Exit(1)
