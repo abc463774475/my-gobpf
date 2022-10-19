@@ -18,6 +18,7 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	nlog "github.com/abc463774475/my_tool/n_log"
 	"os"
 	"os/signal"
 	"strconv"
@@ -197,6 +198,7 @@ func run() {
 	defer m.Close()
 
 	fnName := bpf.GetSyscallFnName("execve")
+	nlog.Info("fnName %v", fnName)
 
 	kprobe, err := m.LoadKprobe("syscall__execve")
 	if err != nil {
