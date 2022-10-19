@@ -10,7 +10,7 @@ import (
 	"regexp"
 )
 
-const source string = `
+const source11 string = `
 #include <uapi/linux/ptrace.h>
 #include <linux/sched.h>
 
@@ -51,7 +51,7 @@ int oncpu(struct pt_regs *ctx, struct task_struct *prev) {
 	
 	// get the current thread start time
 	pid = bpf_get_current_pid_tgid();
-	tid = pid >> 32;
+	tid = bpf_get_current_pid_tgid() >> 32;
     // lookup the current process start time
 	tsp = start.lookup(&pid);
 	if (tsp == 0) {
@@ -83,11 +83,96 @@ int oncpu(struct pt_regs *ctx, struct task_struct *prev) {
 	struct key_t key = {};
 	key.pid = pid;
 	key.tid = tid;
-	key.user_stack_id = USER_STACK_GET;
-	key.kernel_stack_id = KERNEL_STACK_GET;
+	key.user_stack_id = stack_traces.get_stackid(ctx, BPF_F_USER_STACK);
+	key.kernel_stack_id = stack_traces.get_stackid(ctx, 0);
 	bpf_get_current_comm(&key.name, sizeof(key.name));
 	counts.increment(key, delta);
 	return 0;	
+}
+`
+
+var source = `
+
+#include <uapi/linux/ptrace.h>
+#include <linux/sched.h>
+
+#define MINBLOCK_US    1ULL
+#define MAXBLOCK_US    18446744073709551615ULL
+
+struct key_t {
+    u64 pid;
+    u64 tgid;
+    int user_stack_id;
+    int kernel_stack_id;
+    char name[TASK_COMM_LEN];
+};
+BPF_HASH(counts, struct key_t);
+BPF_HASH(start, u32);
+BPF_STACK_TRACE(stack_traces, 1024);
+
+struct warn_event_t {
+    u32 pid;
+    u32 tgid;
+    u32 t_start;
+    u32 t_end;
+};
+BPF_PERF_OUTPUT(warn_events);
+
+int oncpu(struct pt_regs *ctx, struct task_struct *prev) {
+    u32 pid = prev->pid;
+    u32 tgid = prev->tgid;
+    u64 ts, *tsp;
+	
+	
+
+    // record previous thread sleep time
+    if ((1) && (1)) {
+        ts = bpf_ktime_get_ns();
+        start.update(&pid, &ts);
+    }
+
+    // get the current thread's start time
+    pid = bpf_get_current_pid_tgid();
+    tgid = bpf_get_current_pid_tgid() >> 32;
+    tsp = start.lookup(&pid);
+    if (tsp == 0) {
+        return 0;        // missed start or filtered
+    }
+
+    // calculate current thread's delta time
+    u64 t_start = *tsp;
+    u64 t_end = bpf_ktime_get_ns();
+    start.delete(&pid);
+    if (t_start > t_end) {
+        struct warn_event_t event = {
+            .pid = pid,
+            .tgid = tgid,
+            .t_start = t_start,
+            .t_end = t_end,
+        };
+        warn_events.perf_submit(ctx, &event, sizeof(event));
+		
+		bpf_trace_printk ("warn_events submit\n");
+        return 0;
+    }
+    u64 delta = t_end - t_start;
+    delta = delta / 1000;
+    if ((delta < MINBLOCK_US) || (delta > MAXBLOCK_US)) {
+        return 0;
+    }
+
+    // create map key
+    struct key_t key = {};
+
+    key.pid = pid;
+    key.tgid = tgid;
+    key.user_stack_id = stack_traces.get_stackid(ctx, BPF_F_USER_STACK);
+    key.kernel_stack_id = stack_traces.get_stackid(ctx, 0);
+    bpf_get_current_comm(&key.name, sizeof(key.name));
+
+    counts.increment(key, delta);
+    return 0;
+}
 `
 
 var ansiEscape = regexp.MustCompile(`[[:cntrl:]]`)
@@ -102,13 +187,13 @@ type WarnEvent struct {
 func main() {
 	nlog.Info("start")
 	m := bcc.NewModule(source, []string{
-		"-DTHREAD_FILTER=pid == 999",
-		"-DSTATE_FILTER=prev->STATE_FAILED == 0",
-		"-DMINBLOCK_US_VALUEULL=1000000",
-		"-DMAXBLOCK_US_VALUEULL=100000000",
-		"-DSTACK_STORAGE_SIZE=10240",
-		"-DUSER_STACK_GET=stack_traces.get_stackid(ctx, BPF_F_REUSE_STACKID)",
-		"-DKERNEL_STACK_GET=stack_traces.get_stackid(ctx, 0)",
+		//"-DTHREAD_FILTER=pid != 0",
+		//"-DSTATE_FILTER=prev->state == 0",
+		//"-DMINBLOCK_US_VALUEULL=1000000",
+		//"-DMAXBLOCK_US_VALUEULL=100000000",
+		//"-DSTACK_STORAGE_SIZE=10240",
+		//"-DUSER_STACK_GET=(stack_traces.get_stackid(ctx, BPF_F_USER_STACK))",
+		//"-DKERNEL_STACK_GET=stack_traces.get_stackid(ctx, 0)",
 	})
 	defer m.Close()
 
@@ -125,6 +210,8 @@ func main() {
 	}
 
 	table := bcc.NewTable(m.TableId("warn_events"), m)
+
+	nlog.Info("start perf")
 
 	channel := make(chan []byte)
 	perfMap, err := bcc.InitPerfMap(table, channel, nil)
